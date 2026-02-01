@@ -1,15 +1,15 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import {
   Plus, Trash2, CheckCircle2, Circle, ChevronLeft, ChevronRight,
   Calendar as CalendarIcon, Grid, List, Columns, LogIn, LogOut, X,
-  Settings2, CalendarRange, Trash, Eye, Palette, Check
+  Settings2, CalendarRange, Trash, Eye, Palette, Check, Clock
 } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   format, addDays, startOfMonth, endOfMonth, startOfWeek, endOfWeek,
   eachDayOfInterval, isSameMonth, isSameDay, addMonths, startOfYear, endOfYear,
   eachMonthOfInterval, addYears, setMonth, setYear, isWithinInterval, parseISO,
-  getWeekOfMonth
+  getWeekOfMonth, isSaturday, isSunday
 } from 'date-fns'
 import { ko } from 'date-fns/locale'
 import './index.css'
@@ -46,6 +46,19 @@ const getDayColorClass = (date) => {
   return ''
 }
 
+// --- Sorting Logic ---
+const sortSchedules = (list) => {
+  if (!list || !Array.isArray(list)) return []
+  return [...list].sort((a, b) => {
+    const timeA = String(a.time || '')
+    const timeB = String(b.time || '')
+    if (!timeA && !timeB) return 0
+    if (!timeA) return 1
+    if (!timeB) return -1
+    return timeA.localeCompare(timeB)
+  })
+}
+
 // --- Sub-Components ---
 
 const Header = ({ currentDate, viewMode, onPrev, onNext, onShowPicker, onGoToday }) => {
@@ -62,6 +75,23 @@ const Header = ({ currentDate, viewMode, onPrev, onNext, onShowPicker, onGoToday
   if (viewMode === 'day') displayStr = fullDateStr
   if (viewMode === 'week') displayStr = weekStr
   if (viewMode === 'year') displayStr = yearStr
+
+  // --- Fast Time Input Helper ---
+  const formatTimeKey = (val) => {
+    const cleaned = val.replace(/\D/g, '').slice(0, 8)
+    if (cleaned.length >= 4) {
+      const hh1 = cleaned.slice(0, 2)
+      const mm1 = cleaned.slice(2, 4)
+      let out = `${hh1}:${mm1}`
+      if (cleaned.length > 4) {
+        const hh2 = cleaned.slice(4, 6)
+        const mm2 = cleaned.slice(6, 8)
+        out += ` ~ ${hh2}:${mm2}`
+      }
+      return out
+    }
+    return val
+  }
 
   const colorClass = viewMode === 'day' ? getDayColorClass(currentDate) : ''
 
@@ -211,24 +241,85 @@ const DeleteConfirmModal = ({ show, todo, onClose, onDelete }) => {
   )
 }
 
-const PeriodInfoModal = ({ show, todo, dates, onClose, onRemoveRange, onAddRange, onUpdateColor, colorPresets, setColorPresets }) => {
-  const [newRange, setNewRange] = useState({
-    start: format(new Date(), 'yyyy-MM-dd'),
-    end: format(endOfYear(new Date()), 'yyyy-MM-dd')
-  })
+const PeriodInfoModal = ({ show, todo, initialRanges, onClose, onSaveChanges, colorPresets, setColorPresets }) => {
+  const [tempRanges, setTempRanges] = useState([])
   const [tempColor, setTempColor] = useState('')
-  const [isRangeModified, setIsRangeModified] = useState(false)
+  const [tempTimeStart, setTempTimeStart] = useState('')
+  const [tempTimeEnd, setTempTimeEnd] = useState('')
 
   useEffect(() => {
     if (todo && show) {
       setTempColor(todo.color || '')
-      setNewRange({
-        start: format(new Date(), 'yyyy-MM-dd'),
-        end: format(endOfYear(new Date()), 'yyyy-MM-dd')
-      })
-      setIsRangeModified(false)
+      // Deep copy ranges
+      setTempRanges(initialRanges.map(r => ({ ...r })))
+
+      // Parse time if schedule
+      if (todo.time) {
+        const parts = todo.time.split(' ~ ')
+        if (parts.length === 2) {
+          setTempTimeStart(parts[0])
+          setTempTimeEnd(parts[1])
+        } else {
+          // Handle single time or malformed
+          setTempTimeStart(todo.time)
+          setTempTimeEnd('')
+        }
+      } else {
+        setTempTimeStart('')
+        setTempTimeEnd('')
+      }
     }
-  }, [todo, show])
+  }, [todo, show, initialRanges])
+
+  const modalSchStartRef = useRef(null)
+  const modalSchEndRef = useRef(null)
+
+  const handleModalTimeChange = (type, val) => {
+    let digits = val.replace(/\D/g, '')
+    if (type === 'start') {
+      if (digits.length === 8) {
+        setTempTimeStart(digits.slice(0, 2) + ':' + digits.slice(2, 4))
+        setTempTimeEnd(digits.slice(4, 6) + ':' + digits.slice(6, 8))
+        setTimeout(() => modalSchEndRef.current?.focus(), 0)
+        return
+      }
+      let formatted = digits
+      if (digits.length >= 3) {
+        formatted = digits.slice(0, 2) + ':' + digits.slice(2, 4)
+      }
+      setTempTimeStart(formatted)
+      if (digits.length === 4) {
+        setTimeout(() => modalSchEndRef.current?.focus(), 0)
+      }
+    } else {
+      let formatted = digits
+      if (digits.length >= 3) {
+        formatted = digits.slice(0, 2) + ':' + digits.slice(2, 4)
+      }
+      setTempTimeEnd(formatted)
+    }
+  }
+
+  const handleRangeChange = (idx, field, value) => {
+    const newRanges = [...tempRanges]
+    newRanges[idx][field] = value
+    setTempRanges(newRanges)
+  }
+
+  const addNewRangeRow = () => {
+    setTempRanges([...tempRanges, { start: format(new Date(), 'yyyy-MM-dd'), end: format(new Date(), 'yyyy-MM-dd') }])
+  }
+
+  const removeRangeRow = (idx) => {
+    const newRanges = tempRanges.filter((_, i) => i !== idx)
+    setTempRanges(newRanges)
+  }
+
+  const constructTime = () => {
+    if (!tempTimeStart && !tempTimeEnd) return ''
+    if (tempTimeStart && tempTimeEnd) return `${tempTimeStart} ~ ${tempTimeEnd}`
+    return tempTimeStart || tempTimeEnd
+  }
 
   if (!todo) return null
   return (
@@ -244,18 +335,18 @@ const PeriodInfoModal = ({ show, todo, dates, onClose, onRemoveRange, onAddRange
             style={{ display: 'flex', flexDirection: 'column', maxHeight: '90vh' }}
           >
             <div className="modal-header" style={{ marginBottom: '1.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <h2 className="modal-title" style={{ fontSize: '1.3rem', margin: 0 }}>등록 기간 수정</h2>
+              <h2 className="modal-title" style={{ fontSize: '1.3rem', margin: 0 }}>색상 및 기간 수정</h2>
               <button className="close-btn" onClick={onClose}><X size={20} /></button>
             </div>
 
             <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px' }}>
               <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', marginBottom: '1.5rem' }}>
                 <p style={{ marginBottom: '1rem', opacity: 0.8 }}>
-                  <strong>"{todo.text}"</strong> 항목의 설정입니다.
+                  <strong>"{todo.text}"</strong> 설정
                 </p>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-                  <span style={{ fontSize: '0.9rem', opacity: 0.6 }}>할 일 색상:</span>
+                  <span style={{ fontSize: '0.9rem', opacity: 0.6 }}>색상:</span>
                   <ColorPicker
                     selectedColor={tempColor}
                     onSelectColor={setTempColor}
@@ -269,53 +360,52 @@ const PeriodInfoModal = ({ show, todo, dates, onClose, onRemoveRange, onAddRange
                 </div>
               </div>
 
-              <div className="period-list">
-                {dates.map((range, idx) => {
-                  const s = parseISO(range.start)
-                  const e = parseISO(range.end)
-                  const isSingle = range.start === range.end
-
-                  return (
-                    <div key={idx} className="period-item" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span className="period-range">
-                        {isSingle ? (
-                          <span className={getDayColorClass(s)}>
-                            {format(s, 'yyyy.MM.dd (EEEE)', { locale: ko })}
-                          </span>
-                        ) : (
-                          <>
-                            <span className={getDayColorClass(s)}>{format(s, 'yyyy.MM.dd')}</span>
-                            <span style={{ margin: '0 8px', opacity: 0.3 }}>~</span>
-                            <span className={getDayColorClass(e)}>{format(e, 'yyyy.MM.dd')}</span>
-                          </>
-                        )}
-                      </span>
-                      <button
-                        className="delete-range-btn"
-                        onClick={() => onRemoveRange(todo, range)}
-                        title="해당 기간 삭제"
-                        style={{ background: 'transparent', border: 'none', color: '#f87171', cursor: 'pointer', padding: '4px' }}
-                      >
-                        <Trash size={14} />
-                      </button>
+              {/* Time Editor for Schedule */}
+              {(todo.type === 'schedule' || (todo.id && todo.id.startsWith('sch-'))) && (
+                <div style={{ padding: '1rem', background: 'rgba(255,255,255,0.03)', borderRadius: '12px', marginBottom: '1.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                    <span style={{ fontSize: '0.9rem', opacity: 0.6 }}>시간:</span>
+                    <div className="bulk-inputs">
+                      <input
+                        type="text"
+                        ref={modalSchStartRef}
+                        value={tempTimeStart}
+                        onChange={(e) => handleModalTimeChange('start', e.target.value)}
+                        placeholder="00:00"
+                      />
+                      <span className="range-sep">~</span>
+                      <input
+                        type="text"
+                        ref={modalSchEndRef}
+                        value={tempTimeEnd}
+                        onChange={(e) => handleModalTimeChange('end', e.target.value)}
+                        placeholder="00:00"
+                      />
                     </div>
-                  )
-                })}
-              </div>
-
-              <div className="add-period-section" style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '1px solid rgba(255,255,255,0.1)' }}>
-                <h3 style={{ fontSize: '0.9rem', marginBottom: '1rem', opacity: 0.7 }}>새 기간 추가</h3>
-                <div className="input-range-group" style={{ marginBottom: '1rem' }}>
-                  <input type="date" value={newRange.start} onChange={e => {
-                    setNewRange({ ...newRange, start: e.target.value })
-                    setIsRangeModified(true)
-                  }} />
-                  <span style={{ opacity: 0.3 }}>~</span>
-                  <input type="date" value={newRange.end} onChange={e => {
-                    setNewRange({ ...newRange, end: e.target.value })
-                    setIsRangeModified(true)
-                  }} />
+                  </div>
                 </div>
+              )}
+
+              <div className="period-list">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                  <label style={{ fontSize: '0.9rem', color: '#818cf8', fontWeight: 'bold' }}>등록된 기간</label>
+                  <button onClick={addNewRangeRow} style={{ background: 'rgba(255,255,255,0.1)', border: 'none', color: 'white', borderRadius: '4px', padding: '2px 8px', cursor: 'pointer', fontSize: '0.8rem' }}>+ 기간 추가</button>
+                </div>
+
+                {tempRanges.map((range, idx) => (
+                  <div key={idx} className="period-item" style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '10px', background: 'rgba(0,0,0,0.2)', padding: '10px', borderRadius: '8px' }}>
+                    <div className="input-range-group" style={{ flex: 1, padding: '5px' }}>
+                      <input type="date" value={range.start} onChange={e => handleRangeChange(idx, 'start', e.target.value)} />
+                      <span style={{ opacity: 0.5 }}>~</span>
+                      <input type="date" value={range.end} onChange={e => handleRangeChange(idx, 'end', e.target.value)} />
+                    </div>
+                    {/* Allow removing this row from the edit list */}
+                    <button onClick={() => removeRangeRow(idx)} style={{ background: 'transparent', border: 'none', color: '#ef4444', cursor: 'pointer', padding: '5px' }}>
+                      <X size={16} />
+                    </button>
+                  </div>
+                ))}
+                {tempRanges.length === 0 && <p style={{ opacity: 0.4, textAlign: 'center', padding: '1rem' }}>기간이 없습니다.</p>}
               </div>
             </div>
 
@@ -323,15 +413,9 @@ const PeriodInfoModal = ({ show, todo, dates, onClose, onRemoveRange, onAddRange
               <button
                 className="add-btn"
                 style={{ flex: 1, padding: '0.8rem' }}
-                onClick={() => {
-                  onUpdateColor(todo, tempColor)
-                  if (isRangeModified) {
-                    onAddRange(todo, newRange)
-                  }
-                  onClose()
-                }}
+                onClick={() => onSaveChanges(todo, tempRanges, tempColor, tempTimeStart, tempTimeEnd)}
               >
-                확인
+                확인 (저장)
               </button>
               <button
                 className="cancel-btn"
@@ -368,7 +452,7 @@ const ViewSwitcher = ({ viewMode, setViewMode }) => (
   </div>
 )
 
-const MonthView = ({ currentDate, todosByDate, onSelectDate }) => {
+const MonthView = ({ currentDate, todosByDate, onSelectDate, schedulesByDate = {} }) => {
   const monthStart = startOfMonth(currentDate)
   const startDate = startOfWeek(monthStart)
   // 항상 6주(42일)를 보여주도록 설정
@@ -379,6 +463,7 @@ const MonthView = ({ currentDate, todosByDate, onSelectDate }) => {
       {days.map(day => {
         const key = format(day, 'yyyy-MM-dd')
         const hasTodos = todosByDate[key]?.length > 0
+        const schedules = schedulesByDate[key] || []
         const dayOfWeek = format(day, 'E', { locale: ko })
         const colorClass = getDayColorClass(day)
 
@@ -394,6 +479,23 @@ const MonthView = ({ currentDate, todosByDate, onSelectDate }) => {
               {HOLIDAYS_2026[key] && <span style={{ fontSize: '0.6rem', marginLeft: '2px' }}>{HOLIDAYS_2026[key]}</span>}
             </div>
 
+            {/* Schedule Items in Month View */}
+            <div className={`month-sch-container ${schedules.length > 3 ? 'grid-mode' : ''}`}>
+              {sortSchedules(schedules).slice(0, schedules.length > 3 ? 6 : 3).map(sch => (
+                <div key={sch.id} className="month-sch-item" style={{
+                  borderLeft: `2px solid ${sch.color || '#3b82f6'}`
+                }}>
+                  {sch.text}
+                </div>
+              ))}
+              {schedules.length > (schedules.length > 3 ? 6 : 3) && (
+                <div className="more-count">
+                  + {schedules.length - (schedules.length > 3 ? 6 : 3)}
+                </div>
+              )}
+            </div>
+
+            {/* Todo Dots (Moved to Bottom) */}
             <div className="dots-container">
               {(todosByDate[key] || []).slice(0, 8).map(todo => (
                 <div
@@ -522,13 +624,25 @@ const DayView = ({
   currentTodos, inputValue, setInputValue, addTodo, toggleTodo,
   deleteTodo, viewPeriod, isBulk, setIsBulk, bulkRange, setBulkRange,
   selectedColor, setSelectedColor, colorPresets, setColorPresets,
-  todosByDate
+  todosByDate, schedulesByDate,
+  // New props for schedule
+  currentSchedules, scheduleInputValue, setScheduleInputValue, addSchedule, deleteSchedule,
+  showScheduleTime, setShowScheduleTime,
+  scheduleTimeStart, setScheduleTimeStart, scheduleTimeEnd, setScheduleTimeEnd,
+  scheduleColor, setScheduleColor,
+  schStartRef, schEndRef, handleSchTimeChange
 }) => {
-  // 특정 할 일이 등록된 기간(시작~끝)을 계산하는 함수
-  const getPeriodRange = (todo) => {
+  // 특정 할 집/일정이 등록된 기간(시작~끝)을 계산하는 함수
+  const getPeriodRange = (item) => {
+    const isSchedule = item.type === 'schedule' || (item.id && item.id.startsWith('sch-'))
+    const sourceData = isSchedule ? schedulesByDate : todosByDate
+
     const dates = []
-    Object.keys(todosByDate).forEach(d => {
-      const isMatch = todo.batchId ? todosByDate[d].some(t => t.batchId === todo.batchId) : todosByDate[d].some(t => t.text === todo.text && t.createdAt === todo.createdAt)
+    Object.keys(sourceData).forEach(d => {
+      const isMatch = item.batchId
+        ? sourceData[d].some(t => t.batchId === item.batchId)
+        : sourceData[d].some(t => t.text === item.text && t.createdAt === item.createdAt)
+
       if (isMatch) dates.push(parseISO(d))
     })
 
@@ -540,117 +654,249 @@ const DayView = ({
       end: format(sorted[sorted.length - 1], 'MM.dd')
     }
   }
+
   return (
-    <div className="day-view">
-      <div className="input-section">
-        <form onSubmit={addTodo} style={{ width: '100%' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div style={{ display: 'flex', gap: '0.8rem' }}>
-              <input
-                type="text"
-                value={inputValue}
-                onChange={(e) => setInputValue(e.target.value)}
-                placeholder="오늘의 할 일을 입력하세요..."
-                className="todo-input"
-              />
-              <button type="submit" className="add-btn"><Plus size={24} /></button>
-            </div>
-
-            <div className="bulk-toggle-container" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-                <button
-                  type="button"
-                  className={`bulk-toggle-btn ${isBulk ? 'active' : ''}`}
-                  onClick={() => setIsBulk(!isBulk)}
-                >
-                  <CalendarRange size={16} />
-                  <span>기간 설정 {isBulk ? 'ON' : 'OFF'}</span>
-                </button>
-
-                <AnimatePresence>
-                  {isBulk && (
-                    <motion.div initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -10 }} className="bulk-inputs">
-                      <input type="date" value={bulkRange.start} onChange={e => setBulkRange({ ...bulkRange, start: e.target.value })} />
-                      <span className="range-sep">~</span>
-                      <input type="date" value={bulkRange.end} onChange={e => setBulkRange({ ...bulkRange, end: e.target.value })} />
-                    </motion.div>
-                  )}
-                </AnimatePresence>
+    <div className="day-view-container">
+      {/* Left Column: Todos */}
+      <div className="day-column todo-column">
+        <h3 className="column-title">할 일 (To-Do)</h3>
+        <div className="input-section">
+          <form onSubmit={addTodo} style={{ width: '100%' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div style={{ display: 'flex', gap: '0.8rem' }}>
+                <input
+                  type="text"
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  placeholder="할 일을 입력하세요..."
+                  className="todo-input"
+                />
+                <button type="submit" className="add-btn"><Plus size={24} /></button>
               </div>
 
-              <ColorPicker
-                selectedColor={selectedColor}
-                onSelectColor={setSelectedColor}
-                presets={colorPresets}
-                onUpdatePreset={(idx, newColor) => {
-                  const next = [...colorPresets]
-                  next[idx] = newColor
-                  setColorPresets(next)
-                }}
-              />
+              <div className="bulk-toggle-container" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <button
+                    type="button"
+                    className={`bulk-toggle-btn ${isBulk ? 'active' : ''}`}
+                    onClick={() => setIsBulk(!isBulk)}
+                  >
+                    <CalendarRange size={16} />
+                    <span>기간</span>
+                  </button>
+
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: isBulk ? 1 : 0 }}
+                    style={{ pointerEvents: isBulk ? 'auto' : 'none' }}
+                    className="bulk-inputs"
+                  >
+                    <input type="date" value={bulkRange.start} onChange={e => setBulkRange({ ...bulkRange, start: e.target.value })} />
+                    <span className="range-sep">~</span>
+                    <input type="date" value={bulkRange.end} onChange={e => setBulkRange({ ...bulkRange, end: e.target.value })} />
+                  </motion.div>
+                </div>
+
+                <ColorPicker
+                  selectedColor={selectedColor}
+                  onSelectColor={setSelectedColor}
+                  presets={colorPresets}
+                  onUpdatePreset={(idx, newColor) => {
+                    const next = [...colorPresets]
+                    next[idx] = newColor
+                    setColorPresets(next)
+                  }}
+                />
+              </div>
             </div>
-          </div>
-        </form>
+          </form>
+        </div>
+
+        <div className="todo-list">
+          <AnimatePresence mode="popLayout">
+            {currentTodos.map(todo => (
+              <motion.div
+                key={todo.id}
+                layout
+                className="todo-item"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                style={{ borderLeft: todo.color ? `4px solid ${todo.color}` : 'none' }}
+              >
+                <div
+                  style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1, cursor: 'pointer' }}
+                  onClick={() => toggleTodo(todo.id)}
+                >
+                  {todo.completed ? <CheckCircle2 size={20} color="#10b981" /> : <Circle size={20} color={todo.color || "rgba(255,255,255,0.3)"} />}
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <span
+                      className={`todo-text ${todo.completed ? 'completed' : ''}`}
+                      style={{ color: (!todo.completed && todo.color) ? todo.color : 'inherit' }}
+                    >
+                      {todo.text}
+                    </span>
+                    {/* Batch tag removed */}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
+                  {(() => {
+                    const range = getPeriodRange(todo)
+                    return range ? (
+                      <span className="period-badge">
+                        <CalendarRange size={12} />
+                        {range.start} ~ {range.end}
+                      </span>
+                    ) : null
+                  })()}
+                  <button className="view-period-btn" onClick={() => viewPeriod(todo)} title="기간 보기"><Eye size={18} /></button>
+                  <button className="delete-btn" onClick={() => deleteTodo(todo)} title="삭제"><Trash2 size={18} /></button>
+                </div>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+          {currentTodos.length === 0 && <p style={{ opacity: 0.4, marginTop: '3rem' }}>등록된 할 일이 없습니다.</p>}
+        </div>
       </div>
 
-      <div className="todo-list">
-        <AnimatePresence mode="popLayout">
-          {currentTodos.map(todo => (
-            <motion.div
-              key={todo.id}
-              layout
-              className="todo-item"
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              style={{ borderLeft: todo.color ? `4px solid ${todo.color}` : 'none' }}
-            >
-              <div
-                style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1, cursor: 'pointer' }}
-                onClick={() => toggleTodo(todo.id)}
-              >
-                {todo.completed ? <CheckCircle2 size={20} color="#10b981" /> : <Circle size={20} color={todo.color || "rgba(255,255,255,0.3)"} />}
-                <div style={{ display: 'flex', flexDirection: 'column' }}>
-                  <span
-                    className={`todo-text ${todo.completed ? 'completed' : ''}`}
-                    style={{ color: (!todo.completed && todo.color) ? todo.color : 'inherit' }}
+      {/* Right Column: Schedules */}
+      <div className="day-column schedule-column">
+        <h3 className="column-title">일정 (Schedule)</h3>
+        <div className="input-section">
+          <form onSubmit={addSchedule} style={{ width: '100%' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div style={{ display: 'flex', gap: '0.8rem' }}>
+                <input
+                  type="text"
+                  value={scheduleInputValue}
+                  onChange={(e) => setScheduleInputValue(e.target.value)}
+                  placeholder="일정을 입력하세요..."
+                  className="todo-input"
+                />
+                <button type="submit" className="add-btn add-btn-sch"><Plus size={24} /></button>
+              </div>
+
+
+              <div className="bulk-toggle-container" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', minHeight: '42px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  {/* Time Toggle Button */}
+                  <button
+                    type="button"
+                    className={`bulk-toggle-btn ${showScheduleTime ? 'active' : ''}`}
+                    onClick={() => setShowScheduleTime(!showScheduleTime)}
                   >
-                    {todo.text}
-                  </span>
-                  {todo.batchId && <span className="batch-tag">일괄 등록 건</span>}
+                    <Clock size={16} />
+                    <span>시간</span>
+                  </button>
+
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{
+                      opacity: showScheduleTime ? 1 : 0,
+                      pointerEvents: showScheduleTime ? 'auto' : 'none',
+                    }}
+                    style={{ pointerEvents: showScheduleTime ? 'auto' : 'none' }}
+                    className="bulk-inputs"
+                  >
+                    <input
+                      type="text"
+                      ref={schStartRef}
+                      value={scheduleTimeStart}
+                      onChange={(e) => handleSchTimeChange('start', e.target.value)}
+                      placeholder="00:00"
+                    />
+                    <span className="range-sep">~</span>
+                    <input
+                      type="text"
+                      ref={schEndRef}
+                      value={scheduleTimeEnd}
+                      onChange={(e) => handleSchTimeChange('end', e.target.value)}
+                      placeholder="00:00"
+                    />
+                  </motion.div>
                 </div>
+
+                <ColorPicker
+                  selectedColor={scheduleColor}
+                  onSelectColor={setScheduleColor}
+                  presets={colorPresets}
+                  onUpdatePreset={(idx, newColor) => {
+                    const next = [...colorPresets]
+                    next[idx] = newColor
+                    setColorPresets(next)
+                  }}
+                />
               </div>
-              <div style={{ display: 'flex', gap: '0.4rem', alignItems: 'center' }}>
-                {(() => {
-                  const range = getPeriodRange(todo)
-                  return range ? (
-                    <span className="period-badge">
-                      <CalendarRange size={12} />
-                      {range.start} ~ {range.end}
+            </div>
+          </form>
+        </div>
+
+        <div className="schedule-list">
+          <AnimatePresence mode="popLayout">
+            {(currentSchedules || []).map(sch => (
+              <motion.div
+                key={sch.id}
+                layout
+                className="schedule-item"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                style={{ borderLeft: `4px solid ${sch.color || '#3b82f6'}` }}
+              >
+                <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <span className="todo-text">{sch.text}</span>
+                </div>
+                <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                  {sch.time && (
+                    <span style={{ fontFamily: 'monospace', fontSize: '0.8rem', color: '#93c5fd', fontWeight: '600', padding: '2px 6px', background: 'rgba(59,130,246,0.1)', borderRadius: '4px' }}>
+                      {sch.time}
                     </span>
-                  ) : null
-                })()}
-                <button className="view-period-btn" onClick={() => viewPeriod(todo)} title="기간 보기"><Eye size={18} /></button>
-                <button className="delete-btn" onClick={() => deleteTodo(todo)} title="삭제"><Trash2 size={18} /></button>
-              </div>
-            </motion.div>
-          ))}
-        </AnimatePresence>
-        {currentTodos.length === 0 && <p style={{ opacity: 0.4, marginTop: '3rem' }}>오늘의 할 일이 아직 없습니다.</p>}
+                  )}
+                  {(() => {
+                    const range = getPeriodRange(sch)
+                    return range ? (
+                      <span className="period-badge">
+                        <CalendarRange size={12} />
+                        {range.start} ~ {range.end}
+                      </span>
+                    ) : null
+                  })()}
+                  <button className="view-period-btn" onClick={() => viewPeriod(sch)} title="기간 수정">
+                    <Eye size={16} />
+                  </button>
+                  <button className="delete-btn" onClick={() => deleteSchedule(sch.id)} title="삭제">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+              </motion.div>
+            ))}
+          </AnimatePresence>
+          {(!currentSchedules || currentSchedules.length === 0) && <p style={{ opacity: 0.4, marginTop: '3rem' }}>등록된 일정이 없습니다.</p>}
+        </div>
       </div>
     </div>
   )
 }
 
-const WeekView = ({ currentDate, todosByDate, onSelectDate, toggleTodo }) => {
-  const start = startOfWeek(currentDate)
-  const days = eachDayOfInterval({ start, end: addDays(start, 6) })
+// --- Weekly View Component ---
+const WeekView = ({ currentDate, todosByDate, onSelectDate, toggleTodo, schedulesByDate = {} }) => {
+  const start = startOfWeek(currentDate, { weekStartsOn: 0 })
+  const end = addDays(start, 6)
+  const days = eachDayOfInterval({ start, end })
   return (
     <div className="week-grid">
       {days.map(day => {
         const key = format(day, 'yyyy-MM-dd')
         const tasks = todosByDate[key] || []
-        const colorClass = getDayColorClass(day)
+        const schedules = schedulesByDate[key] || []
+
+        const isSat = isSaturday(day)
+        const isSun = isSunday(day)
+        const isHoliday = HOLIDAYS_2026[key]
+        let colorClass = ''
+        if (isSun || isHoliday) colorClass = 'text-red-400'
+        else if (isSat) colorClass = 'text-blue-400 text-opacity-80'
+
         return (
           <div key={key} className="week-day-column" onClick={() => onSelectDate(day)}>
             <div className={`week-day-header ${isSameDay(day, new Date()) ? 'today' : ''}`}>
@@ -677,6 +923,7 @@ const WeekView = ({ currentDate, todosByDate, onSelectDate, toggleTodo }) => {
                     cursor: 'pointer',
                     display: 'flex',
                     alignItems: 'center',
+                    justifyContent: 'flex-start',
                     gap: '4px',
                     color: (!t.completed && t.color) ? t.color : 'inherit'
                   }}
@@ -697,6 +944,33 @@ const WeekView = ({ currentDate, todosByDate, onSelectDate, toggleTodo }) => {
                   }}>
                     {t.text}
                   </span>
+                </div>
+              ))}
+
+              {/* Schedules in Weekly View */}
+              {schedules.length > 0 && <div style={{ height: '1px', background: 'rgba(255,255,255,0.1)', margin: '4px 0' }} />}
+              {sortSchedules(schedules).map(sch => (
+                <div
+                  key={sch.id}
+                  style={{
+                    fontSize: '0.7rem',
+                    padding: '2px 4px',
+                    background: 'rgba(59, 130, 246, 0.2)',
+                    borderRadius: '4px',
+                    borderLeft: `2px solid ${sch.color || '#3b82f6'}`,
+                    marginBottom: '2px',
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    color: '#93c5fd'
+                  }}
+                >
+                  {sch.time && sch.time.split(' ~ ')[0] && (
+                    <span style={{ opacity: 0.7, marginRight: '4px', fontWeight: '700' }}>
+                      {sch.time.split(' ~ ')[0]}
+                    </span>
+                  )}
+                  {sch.text}
                 </div>
               ))}
             </div>
@@ -754,11 +1028,61 @@ function App() {
     const saved = localStorage.getItem('todos_v2')
     return saved ? JSON.parse(saved) : {}
   })
+
+  const [schedulesByDate, setSchedulesByDate] = useState(() => {
+    const saved = localStorage.getItem('schedules_v1')
+    return saved ? JSON.parse(saved) : {}
+  })
+
   const [inputValue, setInputValue] = useState('')
+  const [scheduleInputValue, setScheduleInputValue] = useState('')
+  const [showScheduleTime, setShowScheduleTime] = useState(false)
+  const [scheduleTimeStart, setScheduleTimeStart] = useState('')
+  const [scheduleTimeEnd, setScheduleTimeEnd] = useState('')
+  const [scheduleColor, setScheduleColor] = useState('')
+
+  const schStartRef = useRef(null)
+  const schEndRef = useRef(null)
+
+  const handleSchTimeChange = (type, val) => {
+    // Only allow digits and colons
+    let filtered = val.replace(/[^0-9:]/g, '').slice(0, 5)
+
+    // Auto-format logic (4-digit jump)
+    let digits = val.replace(/\D/g, '')
+
+    if (type === 'start') {
+      if (digits.length === 8) {
+        setScheduleTimeStart(digits.slice(0, 2) + ':' + digits.slice(2, 4))
+        setScheduleTimeEnd(digits.slice(4, 6) + ':' + digits.slice(6, 8))
+        setTimeout(() => schEndRef.current?.focus(), 0)
+        return
+      }
+
+      let formatted = digits
+      if (digits.length >= 3) {
+        formatted = digits.slice(0, 2) + ':' + digits.slice(2, 4)
+      }
+      setScheduleTimeStart(formatted)
+      if (digits.length === 4) {
+        setTimeout(() => schEndRef.current?.focus(), 0)
+      }
+    } else {
+      let formatted = digits
+      if (digits.length >= 3) {
+        formatted = digits.slice(0, 2) + ':' + digits.slice(2, 4)
+      }
+      setScheduleTimeEnd(formatted)
+    }
+  }
 
   useEffect(() => {
     localStorage.setItem('todos_v2', JSON.stringify(todosByDate))
   }, [todosByDate])
+
+  useEffect(() => {
+    localStorage.setItem('schedules_v1', JSON.stringify(schedulesByDate))
+  }, [schedulesByDate])
 
 
   const dateKey = format(currentDate, 'yyyy-MM-dd')
@@ -817,6 +1141,54 @@ function App() {
     setInputValue('')
   }
 
+  /* Schedule Logic */
+  const handleAddSchedule = (e) => {
+    e.preventDefault()
+    if (!scheduleInputValue.trim()) return
+
+    const now = new Date().toISOString()
+
+    let timeStr = ''
+    if (showScheduleTime) {
+      if (scheduleTimeStart && scheduleTimeEnd) {
+        timeStr = `${scheduleTimeStart} ~ ${scheduleTimeEnd}`
+      } else if (scheduleTimeStart) {
+        timeStr = `${scheduleTimeStart}`
+      } else if (scheduleTimeEnd) {
+        timeStr = `~ ${scheduleTimeEnd}`
+      }
+    }
+
+    const schedule = {
+      id: `sch-${dateKey}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      text: scheduleInputValue,
+      time: timeStr,
+      completed: false,
+      color: scheduleColor || '#3b82f6',
+      createdAt: now,
+      type: 'schedule'
+    }
+
+    const newSchedulesByDate = { ...schedulesByDate }
+    newSchedulesByDate[dateKey] = [schedule, ...(newSchedulesByDate[dateKey] || [])]
+
+    setSchedulesByDate(newSchedulesByDate)
+    setScheduleInputValue('')
+    setScheduleTimeStart('')
+    setScheduleTimeEnd('')
+  }
+
+  const handleDeleteSchedule = (id, targetDateKey = dateKey) => {
+    const newSchedulesByDate = { ...schedulesByDate }
+    if (newSchedulesByDate[targetDateKey]) {
+      newSchedulesByDate[targetDateKey] = newSchedulesByDate[targetDateKey].filter(t => t.id !== id)
+      if (newSchedulesByDate[targetDateKey].length === 0) {
+        delete newSchedulesByDate[targetDateKey]
+      }
+      setSchedulesByDate(newSchedulesByDate)
+    }
+  }
+
   const handleToggleTodo = (id, targetDateKey = dateKey) => {
     setTodosByDate({
       ...todosByDate,
@@ -852,76 +1224,107 @@ function App() {
     }
   }
 
-  const handleUpdateTodoColor = (todo, newColor) => {
-    const newTodosByDate = { ...todosByDate }
-    Object.keys(newTodosByDate).forEach(d => {
-      newTodosByDate[d] = (newTodosByDate[d] || []).map(t => {
-        const isMatch = todo.batchId ? t.batchId === todo.batchId : (t.text === todo.text && t.createdAt === todo.createdAt)
-        if (isMatch) return { ...t, color: newColor }
-        return t
-      })
+  /* Transactional Save Handler */
+  const handleSaveChanges = (target, newRanges, newColor, tempTimeStart, tempTimeEnd) => {
+    const isSchedule = target.type === 'schedule' || (target.id && target.id.startsWith('sch-'))
+    const sourceData = isSchedule ? schedulesByDate : todosByDate
+    const setSourceData = isSchedule ? setSchedulesByDate : setTodosByDate
+    const newData = { ...sourceData }
+
+    let newTime = target.time
+    if (isSchedule) {
+      if (tempTimeStart && tempTimeEnd) {
+        newTime = `${tempTimeStart} ~ ${tempTimeEnd}`
+      } else if (tempTimeStart) {
+        newTime = tempTimeStart
+      } else if (tempTimeEnd) {
+        newTime = `~ ${tempTimeEnd}`
+      } else {
+        newTime = ''
+      }
+    }
+
+    const itemMatches = (arr, item) => (arr || []).find(t => {
+      if (item.batchId) return t.batchId === item.batchId
+      return t.text === item.text
     })
-    setTodosByDate(newTodosByDate)
+    const isItemMatch = (t, item) => {
+      if (item.batchId) return t.batchId === item.batchId
+      return t.text === item.text
+    }
 
-    // 모달 데이터 갱신을 위해 periodTarget도 업데이트 (필요한 경우)
-    setPeriodTarget(prev => prev ? { ...prev, color: newColor } : null)
-  }
+    // 1. Calculate All Old Dates for this item
+    const oldDates = []
+    Object.keys(sourceData).forEach(d => {
+      const match = itemMatches(sourceData[d], target)
+      if (match) oldDates.push(d)
+    })
 
-  const handleRemoveRange = (todo, range) => {
-    const start = parseISO(range.start)
-    const end = parseISO(range.end)
-    const newTodosByDate = { ...todosByDate }
+    // 2. Calculate All New Dates from ranges
+    const newDatesSet = new Set()
+    newRanges.forEach(range => {
+      try {
+        const start = parseISO(range.start)
+        const end = parseISO(range.end)
+        const interval = eachDayOfInterval({ start, end })
+        interval.forEach(dt => newDatesSet.add(format(dt, 'yyyy-MM-dd')))
+      } catch (e) { console.error(e) }
+    })
 
-    Object.keys(newTodosByDate).forEach(d => {
-      const date = parseISO(d)
-      if (isWithinInterval(date, { start, end })) {
-        newTodosByDate[d] = (newTodosByDate[d] || []).filter(t => {
-          if (todo.batchId) return t.batchId !== todo.batchId
-          return t.text !== todo.text
+    // 3. Diffing
+    oldDates.forEach(d => {
+      if (!newDatesSet.has(d)) {
+        newData[d] = newData[d].filter(item => !isItemMatch(item, target))
+      } else {
+        newData[d] = newData[d].map(item => {
+          if (isItemMatch(item, target)) {
+            return { ...item, color: newColor, time: newTime }
+          }
+          return item
         })
       }
     })
 
-    setTodosByDate(newTodosByDate)
-
-    // 모달 데이터 갱신을 위해 openPeriodModal 재실행
-    setTimeout(() => openPeriodModal(todo, newTodosByDate), 0)
-  }
-
-  const handleAddRange = (todo, range) => {
-    try {
-      const start = parseISO(range.start)
-      const end = parseISO(range.end)
-      const datesToAdd = eachDayOfInterval({ start, end }).map(d => format(d, 'yyyy-MM-dd'))
-      const newTodosByDate = { ...todosByDate }
-
-      datesToAdd.forEach(d => {
-        const alreadyExists = (newTodosByDate[d] || []).some(t => t.text === todo.text)
-        if (!alreadyExists) {
-          const newTodo = {
-            id: `${d}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            text: todo.text,
-            completed: false,
-            batchId: todo.batchId,
-            createdAt: new Date().toISOString()
-          }
-          newTodosByDate[d] = [newTodo, ...(newTodosByDate[d] || [])]
+    newDatesSet.forEach(d => {
+      if (!oldDates.includes(d)) {
+        const newItem = {
+          id: `${isSchedule ? 'sch-' : ''}${d}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          text: target.text,
+          completed: false,
+          batchId: target.batchId,
+          color: newColor,
+          time: newTime,
+          createdAt: new Date().toISOString(),
+          type: isSchedule ? 'schedule' : undefined
         }
-      })
+        newData[d] = [newItem, ...(newData[d] || [])]
+      }
+    })
 
-      setTodosByDate(newTodosByDate)
-      setTimeout(() => openPeriodModal(todo, newTodosByDate), 0)
-    } catch (err) {
-      alert('올바른 날짜 범위를 선택해주세요.')
-    }
+    setSourceData(newData)
+    setPeriodModalOpen(false)
   }
 
-  const openPeriodModal = (todo, currentTodos = todosByDate) => {
+
+  // Helper for matching
+  const isItemMatch = (item, target) => {
+    if (target.batchId && item.batchId) return item.batchId === target.batchId
+    return item.text === target.text && item.createdAt === target.createdAt
+  }
+  const itemMatches = (list, target) => list && list.some(i => isItemMatch(i, target))
+
+  const openPeriodModal = (target, currentDataOverride = null) => {
+    const isSchedule = target.type === 'schedule' || (target.id && target.id.startsWith('sch-'))
+    const currentData = currentDataOverride || (isSchedule ? schedulesByDate : todosByDate)
+
+    // Explicitly add type if missing for robust checking later
+    const targetWithContext = { ...target, type: isSchedule ? 'schedule' : 'todo' }
+
     const dates = []
-    Object.keys(currentTodos).forEach(d => {
-      const found = currentTodos[d].some(t => {
-        if (todo.batchId) return t.batchId === todo.batchId
-        return t.text === todo.text
+    Object.keys(currentData).forEach(d => {
+      const found = currentData[d].some(item => {
+        if (target.batchId) return item.batchId === target.batchId
+        return item.text === target.text && item.createdAt === target.createdAt
       })
       if (found) dates.push(d)
     })
@@ -945,7 +1348,7 @@ function App() {
       ranges.push(currentRange)
     }
 
-    setPeriodTarget(todo)
+    setPeriodTarget(targetWithContext)
     setPeriodDates(ranges.map(r => ({
       start: format(r.start, 'yyyy-MM-dd'),
       end: format(r.end, 'yyyy-MM-dd')
@@ -1017,11 +1420,9 @@ function App() {
         <PeriodInfoModal
           show={!!periodTarget}
           todo={periodTarget}
-          dates={periodDates}
+          initialRanges={periodDates}
           onClose={() => setPeriodTarget(null)}
-          onRemoveRange={handleRemoveRange}
-          onAddRange={handleAddRange}
-          onUpdateColor={handleUpdateTodoColor}
+          onSaveChanges={handleSaveChanges}
           colorPresets={colorPresets}
           setColorPresets={setColorPresets}
         />
@@ -1038,6 +1439,7 @@ function App() {
               currentDate={currentDate}
               todosByDate={todosByDate}
               onSelectDate={(d) => { setCurrentDate(d); setViewMode('day'); }}
+              schedulesByDate={schedulesByDate}
             />
           )}
           {viewMode === 'week' && (
@@ -1046,6 +1448,7 @@ function App() {
               todosByDate={todosByDate}
               onSelectDate={(d) => { setCurrentDate(d); setViewMode('day'); }}
               toggleTodo={handleToggleTodo}
+              schedulesByDate={schedulesByDate}
             />
           )}
           {viewMode === 'day' && (
@@ -1066,11 +1469,30 @@ function App() {
               colorPresets={colorPresets}
               setColorPresets={setColorPresets}
               todosByDate={todosByDate}
+              // Schedule props
+              currentSchedules={sortSchedules(schedulesByDate[dateKey] || [])}
+              scheduleInputValue={scheduleInputValue}
+              setScheduleInputValue={setScheduleInputValue}
+              addSchedule={handleAddSchedule}
+              deleteSchedule={handleDeleteSchedule}
+              schedulesByDate={schedulesByDate}
+              // New Schedule Props
+              showScheduleTime={showScheduleTime}
+              setShowScheduleTime={setShowScheduleTime}
+              scheduleTimeStart={scheduleTimeStart}
+              setScheduleTimeStart={setScheduleTimeStart}
+              scheduleTimeEnd={scheduleTimeEnd}
+              setScheduleTimeEnd={setScheduleTimeEnd}
+              schStartRef={schStartRef || { current: null }}
+              schEndRef={schEndRef || { current: null }}
+              handleSchTimeChange={handleSchTimeChange}
+              scheduleColor={scheduleColor}
+              setScheduleColor={setScheduleColor}
             />
           )}
         </div>
-      </motion.div >
-    </div >
+      </motion.div>
+    </div>
   )
 }
 
