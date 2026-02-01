@@ -743,6 +743,13 @@ function App() {
     localStorage.setItem('todo_bulk_mode', isBulk)
   }, [isBulk])
 
+  useEffect(() => {
+    setBulkRange(prev => ({
+      ...prev,
+      start: format(currentDate, 'yyyy-MM-dd')
+    }))
+  }, [currentDate])
+
   const [todosByDate, setTodosByDate] = useState(() => {
     const saved = localStorage.getItem('todos_v2')
     return saved ? JSON.parse(saved) : {}
